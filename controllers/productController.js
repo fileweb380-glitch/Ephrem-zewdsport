@@ -1,18 +1,13 @@
-const fs = require('fs');
-const path = require('path');
+const cloudinary = require('../config/cloudinary');
 const Product = require('../models/Product');
 
-const getBaseUrl = (req) => {
-  return `${req.protocol}://${req.get('host')}`;
-};
-
-const deleteLocalFile = (filePath) => {
-  if (!filePath) return;
-  fs.unlink(filePath, (err) => {
-    if (err && err.code !== 'ENOENT') {
-      console.error('Failed to delete local image:', err.message);
-    }
-  });
+const deleteCloudinaryFile = async (publicId) => {
+  if (!publicId) return;
+  try {
+    await cloudinary.uploader.destroy(publicId);
+  } catch (err) {
+    console.error('Failed to delete image from Cloudinary:', err.message);
+  }
 };
 
 const parseOptionalPrice = (rawPrice) => {
@@ -121,12 +116,10 @@ const createProduct = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Price must be a valid non-negative number' });
     }
 
-    const baseUrl = getBaseUrl(req);
     let images = [];
-
     if (req.files && req.files.length > 0) {
       images = req.files.map((file) => ({
-        url: `${baseUrl}/uploads/${file.filename}`,
+        url: file.path,
         public_id: file.filename
       }));
     }
@@ -187,23 +180,19 @@ const updateProduct = async (req, res) => {
       updatedImages = product.images;
     }
 
-    const baseUrl = getBaseUrl(req);
-
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
         updatedImages.push({
-          url: `${baseUrl}/uploads/${file.filename}`,
+          url: file.path,
           public_id: file.filename
         });
       }
     }
 
-    const newPublicIds = updatedImages.map((img) => img.public_id);
-    const uploadDir = path.join(__dirname, '..', 'uploads');
-
+    const keptPublicIds = updatedImages.map((img) => img.public_id);
     for (const oldImg of product.images) {
-      if (oldImg.public_id && !newPublicIds.includes(oldImg.public_id)) {
-        deleteLocalFile(path.join(uploadDir, oldImg.public_id));
+      if (oldImg.public_id && !keptPublicIds.includes(oldImg.public_id)) {
+        await deleteCloudinaryFile(oldImg.public_id);
       }
     }
 
@@ -267,11 +256,10 @@ const deleteProduct = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    const uploadDir = path.join(__dirname, '..', 'uploads');
     if (product.images && product.images.length > 0) {
       for (const img of product.images) {
         if (img.public_id) {
-          deleteLocalFile(path.join(uploadDir, img.public_id));
+          await deleteCloudinaryFile(img.public_id);
         }
       }
     }
