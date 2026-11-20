@@ -15,6 +15,17 @@ const deleteLocalFile = (filePath) => {
   });
 };
 
+const parseOptionalPrice = (rawPrice) => {
+  if (rawPrice === undefined || rawPrice === null || String(rawPrice).trim() === '') {
+    return null;
+  }
+  const num = Number(rawPrice);
+  if (!Number.isFinite(num) || num < 0) {
+    return NaN;
+  }
+  return num;
+};
+
 // @desc    Get all public products
 // @route   GET /api/products
 // @access  Public
@@ -101,8 +112,13 @@ const createProduct = async (req, res) => {
   try {
     const { name, description, price, category, sizes, stockStatus, featured } = req.body;
 
-    if (!name || !description || !price || !category) {
+    if (!name || !description || !category) {
       return res.status(400).json({ success: false, message: 'Please provide all required fields' });
+    }
+
+    const parsedPrice = parseOptionalPrice(price);
+    if (Number.isNaN(parsedPrice)) {
+      return res.status(400).json({ success: false, message: 'Price must be a valid non-negative number' });
     }
 
     const baseUrl = getBaseUrl(req);
@@ -123,7 +139,8 @@ const createProduct = async (req, res) => {
     const product = await Product.create({
       name,
       description,
-      price: Number(price),
+      price: parsedPrice,
+      currency: 'ETB',
       category,
       images,
       sizes: parsedSizes && parsedSizes.length > 0 ? parsedSizes : ['S', 'M', 'L', 'XL'],
@@ -198,19 +215,29 @@ const updateProduct = async (req, res) => {
     const updateData = {
       name: name || product.name,
       description: description || product.description,
-      price: price !== undefined ? Number(price) : product.price,
       category: category || product.category,
+      currency: 'ETB',
       images: updatedImages,
       sizes: parsedSizes && parsedSizes.length > 0 ? parsedSizes : product.sizes,
       stockStatus: stockStatus || product.stockStatus,
       featured: featured !== undefined ? (featured === 'true' || featured === true) : product.featured
     };
 
+    if (price !== undefined) {
+      const parsedPrice = parseOptionalPrice(price);
+      if (Number.isNaN(parsedPrice)) {
+        return res.status(400).json({ success: false, message: 'Price must be a valid non-negative number' });
+      }
+      updateData.price = parsedPrice;
+    }
+
     if (name && name !== product.name) {
-      updateData.slug = name
+      const baseSlug = name
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/(^-|-$)+/g, '');
+      const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      updateData.slug = `${baseSlug || 'product'}-${suffix}`;
     }
 
     product = await Product.findByIdAndUpdate(req.params.id, updateData, {
