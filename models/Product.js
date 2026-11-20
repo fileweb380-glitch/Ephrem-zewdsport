@@ -25,8 +25,12 @@ const productSchema = new mongoose.Schema({
   },
   price: {
     type: Number,
-    required: [true, 'Please add a product price'],
+    default: null,
     min: [0, 'Price must be a positive number']
+  },
+  currency: {
+    type: String,
+    default: 'ETB'
   },
   category: {
     type: String,
@@ -53,13 +57,15 @@ const productSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Auto-generate slug from name if missing
+// Auto-generate unique slug from name if missing or name changed
 productSchema.pre('validate', function() {
-  if (this.name && !this.slug) {
-    this.slug = this.name
+  if (this.name && (!this.slug || this.isModified('name'))) {
+    const baseSlug = this.name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)+/g, '');
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    this.slug = `${baseSlug || 'product'}-${suffix}`;
   }
 });
 
