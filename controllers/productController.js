@@ -1,26 +1,113 @@
-const cloudinary = require('../config/cloudinary');
-const Product = require('../models/Product');
 
-const deleteCloudinaryFile = async (publicId) => {
-  if (!publicId) return;
+const mongoose = require('mongoose');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
+
+const Product = require('../models/Product');
+const { getGridFSBucket } = require('../config/gridfs');
+
+// Upload one image into MongoDB GridFS
+const uploadImageToGridFS = async (file) => {
+  const bucket = getGridFSBucket();
+
+  const filename = file.originalname || `image-${Date.now()}`;
+
+  const uploadStream = bucket.openUploadStream(filename, {
+    contentType: file.mimetype,
+    metadata: {
+      uploadedAt: new Date(),
+      originalName: filename
+    }
+  });
 
   try {
-    await cloudinary.uploader.destroy(publicId);
-  } catch (err) {
-    console.error('Failed to delete image from Cloudinary:', err.message);
+    await pipeline(
+      Readable.from([file.buffer]),
+      uploadStream
+    );
+
+    const fileId = uploadStream.id.toString();
+
+    return {
+      url: `/api/images/${fileId}`,
+      fileId,
+      filename,
+      contentType: file.mimetype,
+      public_id: ''
+    };
+  } catch (error) {
+    // Remove an incomplete upload if one was created
+    if (uploadStream.id) {
+      try {
+        await bucket.delete(uploadStream.id);
+      } catch (deleteError) {
+        console.error('Failed to clean incomplete image:', deleteError.message);
+      }
+    }
+
+    throw error;
   }
 };
 
-const deleteUploadedFiles = async (files) => {
-  if (!files || files.length === 0) return;
+// Upload multiple images
+const uploadImages = async (files) => {
+  const uploadedImages = [];
 
-  for (const file of files) {
-    await deleteCloudinaryFile(file.filename);
+  try {
+    for (const file of files || []) {
+      const image = await uploadImageToGridFS(file);
+      uploadedImages.push(image);
+    }
+
+    return uploadedImages;
+  } catch (error) {
+    await deleteGridFSImages(uploadedImages);
+    throw error;
   }
 };
 
+// Delete only images stored in GridFS
+const deleteGridFSImages = async (images) => {
+  if (!images || images.length === 0) return;
+
+  const bucket = getGridFSBucket();
+
+  for (const image of images) {
+    if (!image.fileId) continue;
+
+    try {
+      if (!mongoose.Types.ObjectId.isValid(image.fileId)) {
+        continue;
+      }
+
+      await bucket.delete(
+        new mongoose.Types.ObjectId(image.fileId)
+      );
+
+      console.log(`GridFS image deleted: ${image.fileId}`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.error(
+          `Failed to delete GridFS image ${image.fileId}:`,
+          error.message
+        );
+      }
+    }
+  }
+};
+
+// Delete newly uploaded images if product creation/update fails
+const deleteUploadedFiles = async (images) => {
+  await deleteGridFSImages(images);
+};
+
+// Parse optional product price
 const parseOptionalPrice = (rawPrice) => {
-  if (rawPrice === undefined || rawPrice === null || String(rawPrice).trim() === '') {
+  if (
+    rawPrice === undefined ||
+    rawPrice === null ||
+    String(rawPrice).trim() === ''
+  ) {
     return null;
   }
 
@@ -33,6 +120,7 @@ const parseOptionalPrice = (rawPrice) => {
   return num;
 };
 
+// Parse product sizes
 const parseSizes = (sizes) => {
   if (typeof sizes === 'string') {
     return sizes
@@ -42,14 +130,20 @@ const parseSizes = (sizes) => {
   }
 
   if (Array.isArray(sizes)) {
-    return sizes.map((size) => String(size).trim()).filter(Boolean);
+    return sizes
+      .map((size) => String(size).trim())
+      .filter(Boolean);
   }
 
   return undefined;
 };
 
-const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Escape search input
+const escapeRegex = (value) => {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
 
+// Generate product slug
 const generateSlug = (name) => {
   const baseSlug = String(name)
     .toLowerCase()
@@ -61,9 +155,58 @@ const generateSlug = (name) => {
   return `${baseSlug || 'product'}-${suffix}`;
 };
 
+// Parse images sent by the frontend during product updates
+const parseExistingImages = (existingImages) => {
+  if (existingImages === undefined || existingImages === null) {
+    return undefined;
+  }
+
+  let images = existingImages;
+
+  if (typeof images === 'string') {
+    try {
+      images = JSON.parse(images);
+    } catch (error) {
+      // Support a single legacy image URL
+      images = {
+        url: existingImages,
+        public_id: ''
+      };
+    }
+  }
+
+  if (!Array.isArray(images)) {
+    images = [images];
+  }
+
+  return images.map((image) => {
+    if (typeof image === 'string') {
+      return {
+        url: image,
+        public_id: '',
+        fileId: ''
+      };
+    }
+
+    if (!image || typeof image.url !== 'string' || !image.url.trim()) {
+      throw new Error('Invalid existing image data');
+    }
+
+    return {
+      url: image.url,
+      public_id: image.public_id || '',
+      fileId: image.fileId || '',
+      filename: image.filename || '',
+      contentType: image.contentType || ''
+    };
+  });
+};
+
+// GET ALL PRODUCTS
 const getProducts = async (req, res) => {
   try {
     const { search, category, stockStatus, featured } = req.query;
+
     const query = {};
 
     if (search) {
@@ -87,7 +230,8 @@ const getProducts = async (req, res) => {
       query.featured = featured === 'true';
     }
 
-    const products = await Product.find(query).sort({ createdAt: -1 });
+    const products = await Product.find(query)
+      .sort({ createdAt: -1 });
 
     res.status(200).json({
       success: true,
@@ -96,6 +240,7 @@ const getProducts = async (req, res) => {
     });
   } catch (error) {
     console.error('Get products error:', error);
+
     res.status(500).json({
       success: false,
       message: 'Failed to fetch products'
@@ -103,6 +248,7 @@ const getProducts = async (req, res) => {
   }
 };
 
+// GET PRODUCT BY ID
 const getProductById = async (req, res) => {
   try {
     const product = await Product.findById(req.params.id);
@@ -135,9 +281,12 @@ const getProductById = async (req, res) => {
   }
 };
 
+// GET PRODUCT BY SLUG
 const getProductBySlug = async (req, res) => {
   try {
-    const product = await Product.findOne({ slug: req.params.slug });
+    const product = await Product.findOne({
+      slug: req.params.slug
+    });
 
     if (!product) {
       return res.status(404).json({
@@ -152,6 +301,7 @@ const getProductBySlug = async (req, res) => {
     });
   } catch (error) {
     console.error('Get product by slug error:', error);
+
     res.status(500).json({
       success: false,
       message: 'Server error'
@@ -159,7 +309,10 @@ const getProductBySlug = async (req, res) => {
   }
 };
 
+// CREATE PRODUCT
 const createProduct = async (req, res) => {
+  let uploadedImages = [];
+
   try {
     const {
       name,
@@ -172,8 +325,6 @@ const createProduct = async (req, res) => {
     } = req.body;
 
     if (!name || !description || !category) {
-      await deleteUploadedFiles(req.files);
-
       return res.status(400).json({
         success: false,
         message: 'Please provide all required fields'
@@ -183,20 +334,14 @@ const createProduct = async (req, res) => {
     const parsedPrice = parseOptionalPrice(price);
 
     if (Number.isNaN(parsedPrice)) {
-      await deleteUploadedFiles(req.files);
-
       return res.status(400).json({
         success: false,
         message: 'Price must be a valid non-negative number'
       });
     }
 
-    const images = req.files && req.files.length > 0
-      ? req.files.map((file) => ({
-          url: file.path,
-          public_id: file.filename
-        }))
-      : [];
+    // Save uploaded images into GridFS
+    uploadedImages = await uploadImages(req.files);
 
     const parsedSizes = parseSizes(sizes);
 
@@ -206,7 +351,7 @@ const createProduct = async (req, res) => {
       price: parsedPrice,
       currency: 'ETB',
       category,
-      images,
+      images: uploadedImages,
       sizes: parsedSizes && parsedSizes.length > 0
         ? parsedSizes
         : ['S', 'M', 'L', 'XL'],
@@ -221,7 +366,8 @@ const createProduct = async (req, res) => {
     });
   } catch (error) {
     console.error('Create product error:', error);
-    await deleteUploadedFiles(req.files);
+
+    await deleteUploadedFiles(uploadedImages);
 
     res.status(500).json({
       success: false,
@@ -230,13 +376,14 @@ const createProduct = async (req, res) => {
   }
 };
 
+// UPDATE PRODUCT
 const updateProduct = async (req, res) => {
+  let uploadedImages = [];
+
   try {
     const product = await Product.findById(req.params.id);
 
     if (!product) {
-      await deleteUploadedFiles(req.files);
-
       return res.status(404).json({
         success: false,
         message: 'Product not found'
@@ -260,8 +407,6 @@ const updateProduct = async (req, res) => {
       parsedPrice = parseOptionalPrice(price);
 
       if (Number.isNaN(parsedPrice)) {
-        await deleteUploadedFiles(req.files);
-
         return res.status(400).json({
           success: false,
           message: 'Price must be a valid non-negative number'
@@ -269,41 +414,31 @@ const updateProduct = async (req, res) => {
       }
     }
 
-    let updatedImages = [];
+    // Preserve existing images unless the frontend sends a new list
+    let updatedImages = parseExistingImages(existingImages);
 
-    if (existingImages) {
-      if (typeof existingImages === 'string') {
-        try {
-          const parsed = JSON.parse(existingImages);
-          updatedImages = Array.isArray(parsed) ? parsed : [parsed];
-        } catch (error) {
-          updatedImages = [{
-            url: existingImages,
-            public_id: ''
-          }];
-        }
-      } else if (Array.isArray(existingImages)) {
-        updatedImages = existingImages;
-      }
-    } else {
+    if (updatedImages === undefined) {
       updatedImages = product.images.map((img) => ({
         url: img.url,
-        public_id: img.public_id
+        public_id: img.public_id || '',
+        fileId: img.fileId || '',
+        filename: img.filename || '',
+        contentType: img.contentType || ''
       }));
     }
 
-    if (req.files && req.files.length > 0) {
-      for (const file of req.files) {
-        updatedImages.push({
-          url: file.path,
-          public_id: file.filename
-        });
-      }
-    }
+    // Upload any newly selected images
+    uploadedImages = await uploadImages(req.files);
 
-    const keptPublicIds = updatedImages.map((img) => img.public_id);
+    updatedImages.push(...uploadedImages);
+
+    // Identify removed GridFS images
+    const keptFileIds = updatedImages.map((img) => img.fileId);
+
     const imagesToDelete = product.images.filter(
-      (oldImg) => oldImg.public_id && !keptPublicIds.includes(oldImg.public_id)
+      (oldImg) =>
+        oldImg.fileId &&
+        !keptFileIds.includes(oldImg.fileId)
     );
 
     const parsedSizes = parseSizes(sizes);
@@ -340,9 +475,8 @@ const updateProduct = async (req, res) => {
       }
     );
 
-    for (const oldImg of imagesToDelete) {
-      await deleteCloudinaryFile(oldImg.public_id);
-    }
+    // Delete removed GridFS images after successful product update
+    await deleteGridFSImages(imagesToDelete);
 
     res.status(200).json({
       success: true,
@@ -351,7 +485,8 @@ const updateProduct = async (req, res) => {
     });
   } catch (error) {
     console.error('Update product error:', error);
-    await deleteUploadedFiles(req.files);
+
+    await deleteUploadedFiles(uploadedImages);
 
     if (error.kind === 'ObjectId' || error.name === 'CastError') {
       return res.status(404).json({
@@ -367,6 +502,7 @@ const updateProduct = async (req, res) => {
   }
 };
 
+// DELETE PRODUCT
 const deleteProduct = async (req, res) => {
   try {
     const product = await Product.findById(req.params.id);
@@ -378,13 +514,9 @@ const deleteProduct = async (req, res) => {
       });
     }
 
-    if (product.images && product.images.length > 0) {
-      for (const img of product.images) {
-        if (img.public_id) {
-          await deleteCloudinaryFile(img.public_id);
-        }
-      }
-    }
+    // Delete only images stored in GridFS.
+    // Existing Cloudinary images are left untouched.
+    await deleteGridFSImages(product.images);
 
     await product.deleteOne();
 
