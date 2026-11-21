@@ -1,8 +1,27 @@
+
 const mongoose = require('mongoose');
 
 const imageSchema = new mongoose.Schema({
-  url: { type: String, required: true },
-  public_id: { type: String, required: true }
+  url: {
+    type: String,
+    required: true
+  },
+  public_id: {
+    type: String,
+    default: ''
+  },
+  fileId: {
+    type: String,
+    default: ''
+  },
+  filename: {
+    type: String,
+    default: ''
+  },
+  contentType: {
+    type: String,
+    default: ''
+  }
 });
 
 const productSchema = new mongoose.Schema({
@@ -35,7 +54,13 @@ const productSchema = new mongoose.Schema({
   category: {
     type: String,
     required: [true, 'Please select a category'],
-    enum: ['Football Jerseys', 'Basketball Jerseys', 'Training Wear', 'Sportswear', 'Accessories']
+    enum: [
+      'Football Jerseys',
+      'Basketball Jerseys',
+      'Training Wear',
+      'Sportswear',
+      'Accessories'
+    ]
   },
   images: [imageSchema],
   sizes: {
@@ -57,14 +82,15 @@ const productSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Auto-generate unique slug from name if missing or name changed
 productSchema.pre('validate', function() {
   if (this.name && (!this.slug || this.isModified('name'))) {
     const baseSlug = this.name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)+/g, '');
+
     const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
     this.slug = `${baseSlug || 'product'}-${suffix}`;
   }
 });
