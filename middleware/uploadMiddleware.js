@@ -36,4 +36,3 @@ const storage = new CloudinaryStorage({
                                                                                       });
 
                                                                                       module.exports = upload;
-                                                                                      
