@@ -38,7 +38,25 @@ router.get('/', getProducts);
 router.get('/slug/:slug', getProductBySlug);
 router.get('/:id', getProductById);
 
-router.post('/', protect, uploadProductImages, createProduct);
+router.post(
+  '/',
+  (req, res, next) => {
+    console.log('STEP 1: Product POST request received');
+    next();
+  },
+  protect,
+  (req, res, next) => {
+    console.log('STEP 2: Admin authentication passed');
+    next();
+  },
+  uploadProductImages,
+  (req, res, next) => {
+    console.log('STEP 3: Cloudinary image upload passed');
+    console.log('Uploaded files:', req.files?.length || 0);
+    next();
+  },
+  createProduct
+);
 router.put('/:id', protect, uploadProductImages, updateProduct);
 router.delete('/:id', protect, deleteProduct);
 
