@@ -1,5 +1,7 @@
+
 const express = require('express');
 const router = express.Router();
+
 const {
   getProducts,
   getProductById,
@@ -8,56 +10,36 @@ const {
   updateProduct,
   deleteProduct
 } = require('../controllers/productController');
+
 const { protect } = require('../middleware/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
 
-
-const uploadProductImages = (req, res, next) => {
-  upload.array('images', 5)(req, res, (err) => {
-    if (err) {
-      // Print the real upload error in Render logs
-      console.error('========== IMAGE UPLOAD ERROR ==========');
-      console.error('Error name:', err.name);
-      console.error('Error message:', err.message);
-      console.error('HTTP status:', err.http_code);
-      console.error('Cloudinary error:', err.error?.message);
-      console.error('=========================================');
-
-      return res.status(400).json({
-        success: false,
-        message: err.message || 'Image upload failed'
-      });
-    }
-
-    next();
-  });
-};
-
-
+// Public routes
 router.get('/', getProducts);
 router.get('/slug/:slug', getProductBySlug);
 router.get('/:id', getProductById);
 
+// Admin: Create product
 router.post(
   '/',
-  (req, res, next) => {
-    console.log('STEP 1: Product POST request received');
-    next();
-  },
   protect,
-  (req, res, next) => {
-    console.log('STEP 2: Admin authentication passed');
-    next();
-  },
-  uploadProductImages,
-  (req, res, next) => {
-    console.log('STEP 3: Cloudinary image upload passed');
-    console.log('Uploaded files:', req.files?.length || 0);
-    next();
-  },
+  upload.array('images', 5),
   createProduct
 );
-router.put('/:id', protect, uploadProductImages, updateProduct);
-router.delete('/:id', protect, deleteProduct);
+
+// Admin: Update product
+router.put(
+  '/:id',
+  protect,
+  upload.array('images', 5),
+  updateProduct
+);
+
+// Admin: Delete product
+router.delete(
+  '/:id',
+  protect,
+  deleteProduct
+);
 
 module.exports = router;
