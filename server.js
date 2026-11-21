@@ -45,6 +45,7 @@ app.use('/api/', limiter);
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/admin/products', require('./routes/productRoutes'));
 app.use('/api/products', require('./routes/productRoutes'));
+app.use('/api/images', require('./routes/imageRoutes'));
 
 // Home route
 app.get('/', (req, res) => {
